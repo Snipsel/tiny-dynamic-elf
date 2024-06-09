@@ -116,23 +116,25 @@ align 8
 iov1 dq con_req, con_req_len
 iov2 dq stat, 16
 
-align 4
-x11createwin:
-op          dw    1
-len         dw x11createwin_len
-win_id      dd    0
-win_parent  dd    0
-x           dw    0
-y           dw    0
-w           dw 1920
-h           dw 1080
-border      dw    0
-group       dw    0
-visual      dd   33
-value_mask  dd 2050 ; cw_back_pixel | cw_event_mask
-value0      dd 0x2233FF ; color
-value1      dd    0 ; event mask
-x11createwin_len = $-x11createwin
+align 8
+ro.start:
+ro.x11createwin:
+.op          dw        1
+.size        dw ro.x11createwin.len
+.win_id      dd        0
+.win_parent  dd        0
+.x           dw        0
+.y           dw        0
+.w           dw     1920
+.h           dw     1080
+.border      dw        0
+.group       dw        0
+.visual      dd       33
+.value_mask  dd     2050 ; cw_back_pixel | cw_event_mask
+.back_pixel  dd 0x2233FF
+.event_mask  dd        0
+ro.x11createwin.len = $-ro.x11createwin
+ro.len = $-ro.start
 
 interp db "/lib64/ld-linux-x86-64.so.2",0
 .len=$-interp
@@ -156,6 +158,7 @@ sockaddr db 1,0,"/tmp/.X11-unix/X0",0
 
 sockaddr_len = $-sockaddr
 msg db "offset = %d", 10, 0
+msg_exit db "exit %lu cy", 10, 0
 xauth db "XAUTHORITY",0
 
 ; ccall:
@@ -169,11 +172,24 @@ SYS_READ    =  0
 SYS_PREAD   = 17
 SYS_SOCKET  = 41
 SYS_CONNECT = 42
+SYS_WRITE   =  1
 SYS_WRITEV  = 20
 AF_UNIX     =  1
 SOCK_STREAM =  1
 
 _start:
+    ; mark entry timestamp
+    rdtsc
+    lfence
+    mov dword [timestamp_start],   eax
+    mov dword [timestamp_start+4], edx
+
+    ; copy ro data into rw segment
+    mov     ecx, ro.len
+    mov     esi, ro.start
+    mov     edi, rw.start
+    rep movsq
+
     ; read get XAUTHORITY
     mov     rdi, xauth
     call    [getenv]
@@ -244,18 +260,50 @@ _start:
     test    eax, -1
     je      err_handshake_read
 
+    push    rax ; save message length
+
     ; find the location of the root array
     movzx   edx, WORD [esi+24] ; vendor string length
-    movzx   edi, BYTE [esi+29] ; format count
+    movzx   ecx, BYTE [esi+29] ; format count
     lea     esi, [edx+40]      ; format offset = vendor string length + size of X11ConSetup
-    lea     esi, [esi+edi*8]   ; root offset   = format_offset + format count * format size
+    lea     esi, [esi+ecx*8]   ; root offset   = format_offset + format count * format size
 
-    
-    mov     rdi, msg
-    call    [printf]
+    ; patch values in the create_window request struct
+    mov     eax, [esi+stat]    ; root[0].window_id
+    mov     [x11createwin.win_parent], eax
+    mov     eax, [esi+32+stat] ; root[0].visual_id
+    mov     [x11createwin.visual], eax
+
+    ; BUG prob a bug with struct, reading hangs, indicating that the server
+    ; is waiting for more bytes to be sent.
+    ; write window request struct
+    mov     rdx, ro.x11createwin.len
+    mov     rsi, x11createwin
+    mov     rax, SYS_WRITE
+    syscall
+
+    pop     rsi  ; restore message length
+
+    ; read window request response
+    mov     rdx, (bss+bss.len)
+    sub     rdx, rsi
+    add     rsi, stat
+    mov     rax, SYS_READ
+    syscall
 
 
 exit_success:
+    ; read out cycle counter
+    lfence
+    rdtsc
+    lfence
+    mov     esi, edx
+    shl     rsi, 32
+    or      rsi, rax
+    sub     rsi, [timestamp_start]
+    mov     edi, msg_exit
+    call    [printf]
+
     xor     edi, edi
     jmp exit_edi
 err_getenv:
@@ -293,6 +341,26 @@ align PAGE_ALIGN
 bss:
 printf   dq ?
 getenv   dq ?
+
+timestamp_start dq ?
+
+align 8
+rw.start:
+x11createwin:
+.op          dw ?
+.size        dw ?
+.win_id      dd ?
+.win_parent  dd ?
+.x           dw ?
+.y           dw ?
+.w           dw ?
+.h           dw ?
+.border      dw ?
+.group       dw ?
+.visual      dd ?
+.value_mask  dd ?
+.back_pixel  dd ?
+.event_mask  dd ?
 
 align 8
 stat:

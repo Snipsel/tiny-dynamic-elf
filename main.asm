@@ -119,8 +119,9 @@ iov2 dq stat, 16
 align 8
 ro.start:
 ro.x11createwin:
-.op          dw        1
-.size        dw ro.x11createwin.len
+.op          db        1
+.depth       db        0
+.size        dw      8+2
 .win_id      dd        0
 .win_parent  dd        0
 .x           dw        0
@@ -129,8 +130,8 @@ ro.x11createwin:
 .h           dw     1080
 .border      dw        0
 .group       dw        0
-.visual      dd       33
-.value_mask  dd     2050 ; cw_back_pixel | cw_event_mask
+.visual      dd        0
+.value_mask  dd   0x0900 ; backing_pixel=0x0100 | event_mask=0x0800
 .back_pixel  dd 0x2233FF
 .event_mask  dd        0
 ro.x11createwin.len = $-ro.x11createwin
@@ -194,7 +195,7 @@ _start:
     mov     rdi, xauth
     call    [getenv]
     test    eax, eax
-    jz      err_getenv
+    jna     err_getenv
 
     ; open the xauthority file
     mov     rdi, rax ; filename
@@ -203,7 +204,7 @@ _start:
     mov     eax, SYS_OPEN
     syscall
     test    eax, eax
-    jz      err_open
+    jna     err_open
 
     ; get its size
     mov     edi, eax  ; fd
@@ -211,7 +212,7 @@ _start:
     mov     eax, SYS_FSTAT
     syscall
     test    eax, eax
-    jnz     err_stat
+    js      err_stat
     
     ; read final 16 bytes for the key
     mov     rdx, 16
@@ -219,8 +220,8 @@ _start:
     sub     r10, rdx
     mov     eax, SYS_PREAD ; re-use edi and esi from last syscall
     syscall
-    test    eax, -1
-    je      err_pread
+    test    eax, eax
+    js      err_pread
 
     ; close xauthority
     mov     rax, SYS_CLOSE
@@ -232,8 +233,8 @@ _start:
     xor     edx, edx
     mov     eax, SYS_SOCKET
     syscall
-    test    eax, -1
-    je      err_socket
+    test    eax, eax
+    js      err_socket
 
     ; connect
     mov     edi, eax
@@ -249,18 +250,19 @@ _start:
     mov     edx, 2
     mov     eax, SYS_WRITEV
     syscall
-    test    eax, -1
-    je      err_handshake_writev
+    test    eax, eax
+    js      err_handshake_writev
 
     ; read initial message
     mov     edx, bss.len-(stat-bss)
     mov     esi, stat
     xor     eax, eax
     syscall
-    test    eax, -1
-    je      err_handshake_read
+    test    eax, eax
+    js      err_handshake_read
 
-    push    rax ; save message length
+    ; save message length
+    mov     r13, rax 
 
     ; find the location of the root array
     movzx   edx, WORD [esi+24] ; vendor string length
@@ -269,20 +271,21 @@ _start:
     lea     esi, [esi+ecx*8]   ; root offset   = format_offset + format count * format size
 
     ; patch values in the create_window request struct
-    mov     eax, [esi+stat]    ; root[0].window_id
-    mov     [x11createwin.win_parent], eax
-    mov     eax, [esi+32+stat] ; root[0].visual_id
-    mov     [x11createwin.visual], eax
+    mov eax, [stat+12] ; setup.id_base
+    mov [x11createwin.win_id], eax
+    ; mov     eax, [esi+stat]    ; root[0].window_id
+    ; mov     [x11createwin.win_parent], eax
+    ; mov     eax, [esi+32+stat] ; root[0].visual_id
+    ; mov     [x11createwin.visual], eax
 
-    ; BUG prob a bug with struct, reading hangs, indicating that the server
-    ; is waiting for more bytes to be sent.
     ; write window request struct
     mov     rdx, ro.x11createwin.len
     mov     rsi, x11createwin
     mov     rax, SYS_WRITE
     syscall
 
-    pop     rsi  ; restore message length
+    ; restore message length
+    mov     rsi, r13
 
     ; read window request response
     mov     rdx, (bss+bss.len)

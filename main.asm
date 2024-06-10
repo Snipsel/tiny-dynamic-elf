@@ -121,20 +121,26 @@ ro.start:
 ro.x11createwin:
 .op          db        1
 .depth       db        0
-.size        dw      8+2
-.win_id      dd        0
+.size        dw        8
+.window      dd        0
 .win_parent  dd        0
 .x           dw        0
 .y           dw        0
 .w           dw     1920
 .h           dw     1080
 .border      dw        0
-.group       dw        0
+.group       dw        1 ; window class input-output
 .visual      dd        0
-.value_mask  dd   0x0900 ; backing_pixel=0x0100 | event_mask=0x0800
-.back_pixel  dd 0x2233FF
-.event_mask  dd        0
-ro.x11createwin.len = $-ro.x11createwin
+.value_mask  dd        0
+;0x0900 ; backing_pixel=0x0100 | event_mask=0x0800
+; .back_pixel  dd 0x2233FF
+; .event_mask  dd        0
+.len = $-ro.x11createwin
+ro.x11mapwindow:
+.op          dw        8
+.size        dw        2
+.window      dd        0
+.len = $-ro.x11mapwindow
 ro.len = $-ro.start
 
 interp db "/lib64/ld-linux-x86-64.so.2",0
@@ -189,7 +195,7 @@ _start:
     mov     ecx, ro.len
     mov     esi, ro.start
     mov     edi, rw.start
-    rep movsq
+    rep movsb
 
     ; read get XAUTHORITY
     mov     rdi, xauth
@@ -261,6 +267,8 @@ _start:
     test    eax, eax
     js      err_handshake_read
 
+    ; TODO: check status, now just assuming it succeeds
+
     ; save message length
     mov     r13, rax 
 
@@ -270,16 +278,26 @@ _start:
     lea     esi, [edx+40]      ; format offset = vendor string length + size of X11ConSetup
     lea     esi, [esi+ecx*8]   ; root offset   = format_offset + format count * format size
 
-    ; patch values in the create_window request struct
-    mov eax, [stat+12] ; setup.id_base
-    mov [x11createwin.win_id], eax
-    ; mov     eax, [esi+stat]    ; root[0].window_id
-    ; mov     [x11createwin.win_parent], eax
-    ; mov     eax, [esi+32+stat] ; root[0].visual_id
-    ; mov     [x11createwin.visual], eax
+    ; generate window id
+    mov     eax, [stat+12] ; setup.id_base
+    mov     ecx, [stat+16] ; setup.id_mask
+    not     ecx
+    and     eax, ecx
+
+    ; write window id to the required places
+    mov     [x11createwin.window], eax
+    mov     [x11mapwindow.window], eax
+
+    ; set the root[0].window_id
+    mov eax, [esi+stat]    
+    mov [x11createwin.win_parent], eax
+
+    ; root[0].visual_id
+    mov     eax, [esi+32+stat] 
+    mov     [x11createwin.visual], eax
 
     ; write window request struct
-    mov     rdx, ro.x11createwin.len
+    mov     rdx, ro.len
     mov     rsi, x11createwin
     mov     rax, SYS_WRITE
     syscall
@@ -294,6 +312,12 @@ _start:
     mov     rax, SYS_READ
     syscall
 
+    ; hang for now
+read_loop:
+    mov     rdx, 4096
+    add     rsi, stat
+    mov     rax, SYS_READ
+    syscall
 
 exit_success:
     ; read out cycle counter
@@ -350,9 +374,10 @@ timestamp_start dq ?
 align 8
 rw.start:
 x11createwin:
-.op          dw ?
+.op          db ?
+.depth       db ?
 .size        dw ?
-.win_id      dd ?
+.window      dd ?
 .win_parent  dd ?
 .x           dw ?
 .y           dw ?
@@ -362,8 +387,10 @@ x11createwin:
 .group       dw ?
 .visual      dd ?
 .value_mask  dd ?
-.back_pixel  dd ?
-.event_mask  dd ?
+x11mapwindow:
+.op          dw ?
+.size        dw ?
+.window      dd ?
 
 align 8
 stat:

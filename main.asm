@@ -1,110 +1,7 @@
 use64
-BASE=0x10000
-OFFSETOF equ -BASE+
-ELF64_PHEADER_ENTRY_SIZE = 56
-org BASE
-
-PAGE_ALIGN = 0x1000
-PT_LOAD    =  1
-PT_DYNAMIC =  2
-PT_INTERP  =  3
-PF_RO      =  4
-PF_RW      =  6
-PF_RX      =  5
-DT_NEEDED  =  1
-DT_STRTAB  =  5
-DT_SYMTAB  =  6
-DT_STRSZ   = 10
-DT_SYMENT  = 11
-DT_RELA    =  7
-DT_RELASZ  =  8
-DT_RELAENT =  9
-DT_NULL    =  0
-ET_EXEC    =  2
-ET_X86_64  = 62
-
-Elf64_EHdr:
-db 0x7F, "ELF", 2, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0
-dw ET_EXEC
-dw ET_X86_64
-dd 1
-dq _start
-dq OFFSETOF Elf64_PHdr                                   
-dq 0
-dd 0
-dw Elf64_EHdr.len
-dw ELF64_PHEADER_ENTRY_SIZE
-dw Elf64_PHdr.len/ELF64_PHEADER_ENTRY_SIZE
-dw 0, 0, 0
-.len=$-Elf64_EHdr
-
-
-Elf64_PHdr:
-dd PT_INTERP
-dd PF_RO
-dq OFFSETOF interp                           
-dq interp, 0
-dq interp.len, interp.len
-dq 1
-
-dd PT_DYNAMIC
-dd PF_RO
-dq OFFSETOF dynamic
-dq dynamic, 0
-dq dynamic.len, dynamic.len
-dq 8
-
-dd PT_LOAD
-dd PF_RX
-dq OFFSETOF Elf64_EHdr
-dq BASE, 0
-dq FILE.len, FILE.len
-dq PAGE_ALIGN
-
-dd PT_LOAD
-dd PF_RW
-dq OFFSETOF bss
-dq bss, 0
-dq 0, bss.len
-dq PAGE_ALIGN
-.len=$-Elf64_PHdr
-
-align 8
-dynamic:
-dq DT_NEEDED,  strtab.libc
-dq DT_STRTAB,  strtab
-dq DT_SYMTAB,  symtab
-dq DT_STRSZ,   strtab.len
-dq DT_SYMENT,  24
-dq DT_RELA,    rela
-dq DT_RELASZ,  rela.len
-dq DT_RELAENT, 24
-dq DT_NULL,     0
-.len=$-dynamic
-
-align 4
-symtab:
-.null=($-symtab)/24
-    rb 24
-.printf=($-symtab)/24
-    dd strtab.printf      ;strtab_index
-    db 1 shl 4 + 2          ;info=GLOBAL,STT_FUNCTION
-    db 0                    ;other
-    dw 0                    ;shndx=SHN_UNDEF
-    dq 0, 0                 ;value=unknown,size=unknown
-.len=$-symtab
-
-align 8
-rela:
-.printf:
-    dq printf                             ;reloc addess
-    dq symtab.printf shl 32 + 1           ;symtab_index shl 32 + type
-    dq 0                                    ;addend
-.len=$-rela
-
-align 8
-iov1 dq con_req, con_req_len
-iov2 dq stat, 16
+org 0x10000
+PAGE_SIZE  = 0x1000
+include 'elf64.asm'
 
 align 8
 ro.start:
@@ -133,18 +30,9 @@ ro.x11mapwindow:
 .len = $-ro.x11mapwindow
 ro.len = $-ro.start
 
-interp db "/lib64/ld-linux-x86-64.so.2",0
-.len=$-interp
-
-
-strtab:
-.null=$-strtab
-    db 0
-.libc=$-strtab
-    db "libc.so.6", 0
-.printf=$-strtab
-    db "printf", 0
-.len=$-strtab
+align 8
+iov1 dq con_req, con_req_len
+iov2 dq stat, 16
 
 con_req  db "l",0,11,0,0,0,18,0,16,0,0,0,"MIT-MAGIC-COOKIE-1",0,0
 con_req_len = $-con_req
@@ -214,7 +102,7 @@ _start:
     test    eax, eax
     jna     err_open
 
-    ; get its size
+    ; get xauthority file size
     mov     edi, eax  ; fd
     mov     esi, stat ; statbuf
     mov     eax, SYS_FSTAT
@@ -314,8 +202,7 @@ _start:
     mov     rax, SYS_READ
     syscall
 
-    ; hang for now
-read_loop:
+    ; hang until next message (should be window close event)
     mov     rdx, 4096
     add     rsi, stat
     mov     rax, SYS_READ
@@ -364,9 +251,9 @@ exit_edi:
     syscall
 
 
-FILE.len=$-BASE
+FILE.len=$-$$
 
-align PAGE_ALIGN
+align PAGE_SIZE
 bss:
 printf   dq ?
 

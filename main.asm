@@ -92,12 +92,6 @@ symtab:
     db 0                    ;other
     dw 0                    ;shndx=SHN_UNDEF
     dq 0, 0                 ;value=unknown,size=unknown
-.getenv=($-symtab)/24
-    dd strtab.getenv      ;strtab_index
-    db 1 shl 4 + 2          ;info=GLOBAL,STT_FUNCTION
-    db 0                    ;other
-    dw 0                    ;shndx=SHN_UNDEF
-    dq 0, 0                 ;value=unknown,size=unknown
 .len=$-symtab
 
 align 8
@@ -105,10 +99,6 @@ rela:
 .printf:
     dq printf                             ;reloc addess
     dq symtab.printf shl 32 + 1           ;symtab_index shl 32 + type
-    dq 0                                    ;addend
-.getenv:
-    dq getenv                             ;reloc addess
-    dq symtab.getenv shl 32 + 1           ;symtab_index shl 32 + type
     dq 0                                    ;addend
 .len=$-rela
 
@@ -154,8 +144,6 @@ strtab:
     db "libc.so.6", 0
 .printf=$-strtab
     db "printf", 0
-.getenv=$-strtab
-    db "getenv", 0
 .len=$-strtab
 
 con_req  db "l",0,11,0,0,0,18,0,16,0,0,0,"MIT-MAGIC-COOKIE-1",0,0
@@ -164,9 +152,10 @@ con_req_len = $-con_req
 sockaddr db 1,0,"/tmp/.X11-unix/X0",0
 
 sockaddr_len = $-sockaddr
-msg db "offset = %d", 10, 0
+msg db "offset = %s", 10, 0
 msg_exit db "exit %lu cy", 10, 0
-xauth db "XAUTHORITY",0
+xauth db "XAUTHORITY="
+.len = $-xauth
 
 ; ccall:
 ; int args:   rdi, rsi, rdx, rcx, r8, r9
@@ -197,14 +186,27 @@ _start:
     mov     edi, rw.start
     rep movsb
 
-    ; read get XAUTHORITY
-    mov     rdi, xauth
-    call    [getenv]
-    test    eax, eax
-    jna     err_getenv
+    ; read XAUTHORITY environment variable
+    mov     rax, [rsp]          ; read argc
+    lea     rax, [rsp+rax*8+16] ; locate env pointer
+.loop_outer: ; iterates over the array of strings
+    mov     rdi, [rax]
+    test	rdi, rdi
+    jz      err_getenv  ; we've found the end of the env array without finding xauth
+    xor     edx, edx
+.loop_inner: ; iterates over chars of string
+    mov     sil, byte [xauth + rdx]
+    cmp     byte [rdi + rdx], sil
+    je      .exit_inner
+    add     rax, 8
+    jmp	    .loop_outer
+.exit_inner:
+    inc	    rdx
+    cmp	    rdx, xauth.len
+    jne	    .loop_inner
+    add	    rdi, xauth.len ; skip past the equals sign
 
     ; open the xauthority file
-    mov     rdi, rax ; filename
     xor     esi, esi ; flags
     xor     edx, edx ; mode
     mov     eax, SYS_OPEN
@@ -367,7 +369,6 @@ FILE.len=$-BASE
 align PAGE_ALIGN
 bss:
 printf   dq ?
-getenv   dq ?
 
 timestamp_start dq ?
 

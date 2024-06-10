@@ -3,12 +3,12 @@ org 0x10000
 PAGE_SIZE  = 0x1000
 include 'elf64.asm'
 
-align 8
-ro.start:
-ro.x11createwin:
+align 4
+rocopy.start: ; read-only data that's copied into the read-write segment
+rocopy.x11createwin:
 .op          db        1
 .depth       db        0
-.size        dw        8
+.size        dw      8+1
 .window      dd        0
 .win_parent  dd        0
 .x           dw        0
@@ -18,29 +18,27 @@ ro.x11createwin:
 .border      dw        0
 .group       dw        1 ; window class input-output
 .visual      dd        0
-.value_mask  dd        0
-;0x0900 ; backing_pixel=0x0100 | event_mask=0x0800
-; .back_pixel  dd 0x2233FF
-; .event_mask  dd        0
-.len = $-ro.x11createwin
-ro.x11mapwindow:
+.value_mask  dd   0x0800 ; backing_pixel=0x0100 | event_mask=0x0800
+.event_mask  dd        0
+.len = $-rocopy.x11createwin
+rocopy.x11mapwindow:
 .op          dw        8
 .size        dw        2
 .window      dd        0
-.len = $-ro.x11mapwindow
-ro.len = $-ro.start
+.len = $-rocopy.x11mapwindow
+rocopy.len = $-rocopy.start
 
 align 8
 iov1 dq con_req, con_req_len
-iov2 dq stat, 16
+iov2 dq bss.buffer, 16
+
+align 2
+sockaddr db 1,0,"/tmp/.X11-unix/X0",0
+sockaddr_len = $-sockaddr
 
 con_req  db "l",0,11,0,0,0,18,0,16,0,0,0,"MIT-MAGIC-COOKIE-1",0,0
 con_req_len = $-con_req
 
-sockaddr db 1,0,"/tmp/.X11-unix/X0",0
-
-sockaddr_len = $-sockaddr
-msg db "offset = %s", 10, 0
 msg_exit db "exit %lu cy", 10, 0
 xauth db "XAUTHORITY="
 .len = $-xauth
@@ -65,13 +63,13 @@ _start:
     ; mark entry timestamp
     rdtsc
     lfence
-    mov dword [timestamp_start],   eax
-    mov dword [timestamp_start+4], edx
+    mov dword [bss.timestamp.start],   eax
+    mov dword [bss.timestamp.start+4], edx
 
     ; copy ro data into rw segment
-    mov     ecx, ro.len
-    mov     esi, ro.start
-    mov     edi, rw.start
+    mov     ecx, rocopy.len
+    mov     esi, rocopy.start
+    mov     edi, bss.rwcopy.start
     rep movsb
 
     ; read XAUTHORITY environment variable
@@ -103,8 +101,8 @@ _start:
     jna     err_open
 
     ; get xauthority file size
-    mov     edi, eax  ; fd
-    mov     esi, stat ; statbuf
+    mov     edi, eax
+    mov     esi, bss.buffer
     mov     eax, SYS_FSTAT
     syscall
     test    eax, eax
@@ -112,7 +110,7 @@ _start:
     
     ; read final 16 bytes for the key
     mov     rdx, 16
-    mov     r10, [stat.len] 
+    mov     r10, [bss.buffer+48] ; filesize offset in stat struct
     sub     r10, rdx
     mov     eax, SYS_PREAD ; re-use edi and esi from last syscall
     syscall
@@ -150,8 +148,8 @@ _start:
     js      err_handshake_writev
 
     ; read initial message
-    mov     edx, bss.len-(stat-bss)
-    mov     esi, stat
+    mov     edx, bss.len-(bss.buffer-bss)
+    mov     esi, bss.buffer
     xor     eax, eax
     syscall
     test    eax, eax
@@ -169,28 +167,35 @@ _start:
     lea     esi, [esi+ecx*8]   ; root offset   = format_offset + format count * format size
 
     ; generate window id
-    mov     eax, [stat+12] ; setup.id_base
-    mov     ecx, [stat+16] ; setup.id_mask
+    mov     eax, [bss.buffer+12] ; setup.id_base
+    mov     ecx, [bss.buffer+16] ; setup.id_mask
     not     ecx
     and     eax, ecx
 
     ; write window id to the required places
-    mov     [x11createwin.window], eax
-    mov     [x11mapwindow.window], eax
+    mov     [bss.x11createwin.window], eax
+    mov     [bss.x11mapwindow.window], eax
 
     ; set the root[0].window_id
-    mov eax, [esi+stat]    
-    mov [x11createwin.win_parent], eax
+    mov eax, [esi+bss.buffer+0]    
+    mov [bss.x11createwin.win_parent], eax
 
     ; root[0].visual_id
-    mov     eax, [esi+32+stat] 
-    mov     [x11createwin.visual], eax
+    mov     eax, [esi+bss.buffer+32] 
+    mov     [bss.x11createwin.visual], eax
 
     ; write window request struct
-    mov     rdx, ro.len
-    mov     rsi, x11createwin
+    mov     rdx, rocopy.len
+    mov     rsi, bss.x11createwin
     mov     rax, SYS_WRITE
     syscall
+
+    ; read out cycle counter
+    lfence
+    rdtsc
+    lfence
+    mov dword [bss.timestamp.win_open],   eax
+    mov dword [bss.timestamp.win_open+4], edx
 
     ; restore message length
     mov     rsi, r13
@@ -198,25 +203,19 @@ _start:
     ; read window request response
     mov     rdx, (bss+bss.len)
     sub     rdx, rsi
-    add     rsi, stat
+    add     rsi, bss.buffer
     mov     rax, SYS_READ
     syscall
 
     ; hang until next message (should be window close event)
     mov     rdx, 4096
-    add     rsi, stat
+    add     rsi, bss.buffer
     mov     rax, SYS_READ
     syscall
 
 exit_success:
-    ; read out cycle counter
-    lfence
-    rdtsc
-    lfence
-    mov     esi, edx
-    shl     rsi, 32
-    or      rsi, rax
-    sub     rsi, [timestamp_start]
+    mov     rsi, [bss.timestamp.win_open]
+    sub     rsi, [bss.timestamp.start]
     mov     edi, msg_exit
     call    [printf]
 
@@ -257,11 +256,13 @@ align PAGE_SIZE
 bss:
 printf   dq ?
 
-timestamp_start dq ?
+bss.timestamp:
+.start    dq ?
+.win_open dq ?
 
 align 8
-rw.start:
-x11createwin:
+bss.rwcopy.start:
+bss.x11createwin:
 .op          db ?
 .depth       db ?
 .size        dw ?
@@ -275,15 +276,15 @@ x11createwin:
 .group       dw ?
 .visual      dd ?
 .value_mask  dd ?
-x11mapwindow:
+.event_mask  dd ?
+bss.x11mapwindow:
 .op          dw ?
 .size        dw ?
 .window      dd ?
 
 align 8
-stat:
-times 48 db ?
-.len     dq ?
+bss.buffer:
+.len=bss.len-bss.buffer
 
 bss.len = 0x10000
 
